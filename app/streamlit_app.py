@@ -40,6 +40,8 @@ TEST_CASES_DIR = PROJECT_ROOT / "data" / "test_cases"
 MAX_UPLOAD_MB = 2048
 # Entire-file scan above this size uses chunked read + predict (supports ~1 GB uploads)
 LARGE_UPLOAD_BYTES = 50 * 1024 * 1024
+# "Test case files" page: do not offer st.file_uploader for huge tiers (browser upload = long buffer).
+TEST_CASE_IN_PAGE_UPLOAD_MAX = 50 * 1024 * 1024
 # In-browser download cap (results CSV); if larger we gzip or only offer sample
 MAX_DOWNLOAD_RESULT_BYTES = 100 * 1024 * 1024
 # Streamlit Community Cloud may cap lower — large files: generate on server, don’t upload
@@ -822,10 +824,10 @@ def render_test_case_library() -> None:
     st.caption(
         f"Folder `{rel}/` — **9 preset sizes** (10 KB → 1 GB). NSL-KDD–shaped synthetic CSV; "
         "use **Upload & Scan** to run the model on one of these files. "
-        f"**Max upload in this app config:** **{MAX_UPLOAD_MB} MB** (`.streamlit/config.toml` `maxUploadSize`). "
-        "Uploading 200 MB–1 GB is **slow** (depends on your internet **upload** speed, not download). "
-        "On Cloud, prefer **Generate** here, then in **Upload & Scan** pick **Server file** so no big upload. "
-        "You can also gzip the CSV on your PC and upload `.gz` in **Upload & Scan** to save time."
+        f"**On this page, browser upload is only for tiers ≤ ~{_fmt_file_size(TEST_CASE_IN_PAGE_UPLOAD_MAX)}.** "
+        "For **100 MB+** tiers we **turn off upload** (it only caused endless buffering) — use **Generate this file only** instead. "
+        f"**Max file size in app config:** **{MAX_UPLOAD_MB} MB** (`.streamlit/config.toml` `maxUploadSize`). "
+        "After **Generate**, open **Upload & Scan → Server file** to scan with **no** big upload from your PC."
     )
     TEST_CASES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -864,6 +866,7 @@ def render_test_case_library() -> None:
         path = TEST_CASES_DIR / fname
         exists = path.is_file()
         upload_ok = tbytes <= MAX_UPLOAD_MB * 1024 * 1024
+        allow_in_page_upload = upload_ok and tbytes <= TEST_CASE_IN_PAGE_UPLOAD_MAX
         hint = (
             f"Target on disk ≈ {label} — one file, grows by rows until size reached. "
             + ("Fits under upload cap." if upload_ok else f"Larger than {MAX_UPLOAD_MB} MB cap — use Generate, not upload.")
@@ -873,14 +876,27 @@ def render_test_case_library() -> None:
             if exists:
                 st.success(f"Found — **{_fmt_file_size(path.stat().st_size)}**")
             else:
-                st.info("Missing — **Generate** here or **upload** if under max size.")
+                st.info("Missing — use **Generate this file only** (recommended for 100MB+), or small-tier **upload** where enabled.")
+            if upload_ok and not allow_in_page_upload:
+                st.warning(
+                    f"**Upload is disabled** for this tier: putting **{_fmt_file_size(tbytes)}** through the "
+                    "browser uploader just **buffers 10–40+ min** and looks broken. "
+                    "Use **Generate this file only** (writes on the server), then go to **Upload & Scan → Server file**."
+                )
             fup = st.file_uploader(
-                "Upload CSV" + ("" if upload_ok else f" (file too big for {MAX_UPLOAD_MB} MB cap — generate instead)"),
+                "Upload CSV"
+                + (
+                    ""
+                    if allow_in_page_upload
+                    else (
+                        f" (off for this tier — use **Generate**; max in-page upload size is ~{_fmt_file_size(TEST_CASE_IN_PAGE_UPLOAD_MAX)})"
+                    )
+                ),
                 type=["csv"],
                 key=f"tc_up_{fname}",
-                disabled=not upload_ok,
+                disabled=not allow_in_page_upload,
             )
-            if upload_ok and fup is not None and st.button("Save as " + fname, key=f"tc_save_{fname}"):
+            if allow_in_page_upload and fup is not None and st.button("Save as " + fname, key=f"tc_save_{fname}"):
                 try:
                     _save_upload_to_test_cases(fup, fname)
                     st.success("Saved.")
