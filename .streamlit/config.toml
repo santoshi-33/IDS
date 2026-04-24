@@ -3,6 +3,8 @@
 headless = true
 enableCORS = true
 enableXsrfProtection = true
+# Allow uploading large test CSVs (e.g. 1 GB) to data/test_cases/ — raise if your host enforces a lower limit.
+maxUploadSize = 2048
 
 [browser]
 gatherUsageStats = false

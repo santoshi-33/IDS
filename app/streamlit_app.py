@@ -26,6 +26,38 @@ from ids.user_store import env_bootstrap_exists, sign_up, verify_user
 
 APP_TITLE = "ML-based Intrusion Detection System (IDS)"
 
+# Load / synthetic test datasets (e.g. 200 MB, 1 GB) for benchmarking — see scripts/generate_test_datasets.py
+TEST_CASES_DIR = PROJECT_ROOT / "data" / "test_cases"
+TEST_CASE_SMALL = "test_small.csv"
+TEST_CASE_200MB = "test_200mb.csv"
+TEST_CASE_1GB = "test_1gb.csv"
+
+
+def _fmt_file_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024**2:
+        return f"{n / 1024:.1f} KB"
+    if n < 1024**3:
+        return f"{n / 1024**2:.1f} MB"
+    return f"{n / 1024**3:.2f} GB"
+
+
+def _save_upload_to_test_cases(uploaded, safe_name: str) -> None:
+    """Write an uploaded file into TEST_CASES_DIR (safe basename only)."""
+    name = Path(safe_name).name
+    if name != safe_name or ".." in safe_name or Path(safe_name).is_absolute():
+        raise ValueError("Invalid file name.")
+    TEST_CASES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = TEST_CASES_DIR / name
+    dest.write_bytes(uploaded.getvalue())
+
+
+def _run_generate_subprocess(extra: list[str]) -> subprocess.CompletedProcess[str]:
+    script = PROJECT_ROOT / "scripts" / "generate_test_datasets.py"
+    cmd = [sys.executable, str(script), "--out-dir", "data/test_cases", "--no-legacy-synth-names", *extra]
+    return subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False)
+
 
 def _get_env(key: str, default: str) -> str:
     v = os.getenv(key)
@@ -309,6 +341,111 @@ def render_upload_and_scan(pipe: Any) -> None:
         }
 
 
+def render_test_case_library() -> None:
+    """`data/test_cases/`: expected load-test CSVs; upload or generate if missing."""
+    st.header("Test case files")
+    rel = TEST_CASES_DIR.relative_to(PROJECT_ROOT)
+    st.caption(
+        f"Directory `{rel}/` — keep benchmark CSVs here (e.g. ~200 MB, ~1 GB). "
+        "If a file is missing, upload your own or generate synthetic NSL-KDD–shaped data on this machine. "
+        "Very large uploads depend on [server] maxUploadSize in `.streamlit/config.toml` and host limits."
+    )
+    TEST_CASES_DIR.mkdir(parents=True, exist_ok=True)
+
+    slots: list[dict[str, str | list[str]]] = [
+        {
+            "title": "Small sample",
+            "file": TEST_CASE_SMALL,
+            "hint": "About tens of KB — quick sanity check.",
+            "gen_args": [
+                "--prefix",
+                "test",
+                "--kb-rows",
+                "50",
+                "--mb-target",
+                "200",
+                "--target-gb",
+                "1",
+                "--skip-medium",
+                "--skip-large",
+            ],
+        },
+        {
+            "title": "~200 MB",
+            "file": TEST_CASE_200MB,
+            "hint": "Synthetic file grown to about 200 MB (may take a few minutes).",
+            "gen_args": [
+                "--prefix",
+                "test",
+                "--mb-target",
+                "200",
+                "--target-gb",
+                "1",
+                "--skip-small",
+                "--skip-large",
+            ],
+        },
+        {
+            "title": "~1 GB",
+            "file": TEST_CASE_1GB,
+            "hint": "Synthetic file grown to about 1 GB (long run; needs free disk).",
+            "gen_args": [
+                "--prefix",
+                "test",
+                "--mb-target",
+                "200",
+                "--target-gb",
+                "1",
+                "--skip-small",
+                "--skip-medium",
+            ],
+        },
+    ]
+
+    for slot in slots:
+        fname = str(slot["file"])
+        title = str(slot["title"])
+        hint = str(slot["hint"])
+        gen_args: list[str] = slot["gen_args"]  # type: ignore[assignment]
+        path = TEST_CASES_DIR / fname
+        exists = path.is_file()
+        with st.expander(f"{title} — `{fname}`", expanded=not exists):
+            st.caption(hint)
+            if exists:
+                st.success(f"Found — **{_fmt_file_size(path.stat().st_size)}**")
+            else:
+                st.info("File missing — upload a `.csv` or use **Generate** (writes under this folder).")
+            fup = st.file_uploader("Upload CSV (optional)", type=["csv"], key=f"tc_up_{fname}")
+            if fup is not None and st.button("Save as " + fname, key=f"tc_save_{fname}"):
+                try:
+                    _save_upload_to_test_cases(fup, fname)
+                    st.success("Saved.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+            if st.button("Generate on this machine", key=f"tc_gen_{fname}"):
+                with st.status("Running `scripts/generate_test_datasets.py`...", expanded=True) as status:
+                    proc = _run_generate_subprocess(gen_args)
+                    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+                    st.code(out or "(no output)")
+                    if proc.returncode == 0:
+                        status.update(label="Done.", state="complete")
+                        st.success("Refresh to see the file.")
+                        st.rerun()
+                    else:
+                        status.update(label="Failed.", state="error")
+                        st.error("Generator exited with an error.")
+
+    st.divider()
+    st.subheader("All CSVs in this folder")
+    all_csv = sorted(TEST_CASES_DIR.glob("*.csv"), key=lambda p: p.name.lower())
+    if not all_csv:
+        st.caption("No `.csv` files yet.")
+    else:
+        for p in all_csv:
+            st.write(f"- `{p.name}` — {_fmt_file_size(p.stat().st_size)}")
+
+
 def render_live_monitoring(pipe: Any) -> None:
     st.header("Live Attack Monitoring")
     st.caption("Default mode is simulation (safe). Packet capture requires root + scapy.")
@@ -376,7 +513,7 @@ def main() -> None:
     st.sidebar.header("Navigation")
     page = st.sidebar.radio(
         "Go to",
-        options=["Home", "Upload & Scan", "Live Monitoring"],
+        options=["Home", "Upload & Scan", "Live Monitoring", "Test case files"],
         index=0,
     )
 
@@ -396,6 +533,8 @@ def main() -> None:
         render_upload_and_scan(pipe)
     elif page == "Live Monitoring":
         render_live_monitoring(pipe)
+    elif page == "Test case files":
+        render_test_case_library()
 
 
 if __name__ == "__main__":

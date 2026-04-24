@@ -6,6 +6,8 @@ Same columns as data/train.csv (if present) or a built-in schema.
   python scripts/generate_test_datasets.py
   python scripts/generate_test_datasets.py --skip-2gb
   python scripts/generate_test_datasets.py --target-gb 1.0
+  python scripts/generate_test_datasets.py --out-dir data/test_cases --no-legacy-synth-names \
+      --prefix test --mb-target 200 --target-gb 1 --skip-small --skip-large
 """
 from __future__ import annotations
 
@@ -161,12 +163,50 @@ def write_until_size(
                 w.writerow(row)
             f.flush()
             total = f.tell()
-            print(f"  ... {path.name} ~{total / (1024**3):.2f} GB", flush=True)
+            gb = total / (1024**3)
+            if gb >= 0.1:
+                print(f"  ... {path.name} ~{gb:.2f} GB", flush=True)
+            else:
+                print(f"  ... {path.name} ~{total / (1024**2):.1f} MB", flush=True)
+
+
+def _default_paths(out: Path, prefix: str, mb_target: float, target_gb: float) -> tuple[Path, Path, Path]:
+    mb_name = f"{int(mb_target)}mb" if float(mb_target).is_integer() else str(mb_target).replace(".", "_")
+    gb_name = f"{int(target_gb)}gb" if float(target_gb).is_integer() else str(target_gb).replace(".", "_")
+    return (
+        out / f"{prefix}_small.csv",
+        out / f"{prefix}_{mb_name}.csv",
+        out / f"{prefix}_{gb_name}.csv",
+    )
+
+
+def _legacy_synth_paths(out: Path) -> tuple[Path, Path, Path]:
+    """Names used when outputting to `data/synth/` (backward compatible)."""
+    return (
+        out / "synth_small_kb.csv",
+        out / "synth_medium_mb.csv",
+        out / "synth_large_2gb.csv",
+    )
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--out-dir", default="data/synth", help="Output directory")
+    p.add_argument(
+        "--prefix",
+        default="test",
+        help="File name prefix when not using legacy synth/ names, e.g. test -> test_small.csv, test_200mb.csv",
+    )
+    p.add_argument(
+        "--use-legacy-synth-names",
+        action="store_true",
+        help="Use synth_small_kb.csv / synth_medium_mb.csv / synth_large_2gb.csv (on by default for --out-dir data/synth).",
+    )
+    p.add_argument(
+        "--no-legacy-synth-names",
+        action="store_true",
+        help="Always use --prefix-based file names, even for data/synth.",
+    )
     p.add_argument(
         "--kb-rows",
         type=int,
@@ -175,35 +215,55 @@ def main() -> None:
     )
     p.add_argument("--mb-target", type=float, default=30.0, help="Target size for MB file")
     p.add_argument("--target-gb", type=float, default=2.0, help="Target size for large file (GB)")
-    p.add_argument("--skip-2gb", action="store_true", help="Do not generate multi-GB file")
+    p.add_argument("--skip-small", action="store_true", help="Do not generate the small (KB) file")
+    p.add_argument("--skip-medium", action="store_true", help="Do not generate the medium (MB) file")
+    p.add_argument("--skip-large", action="store_true", help="Do not generate the large (GB) file")
+    p.add_argument(
+        "--skip-2gb",
+        action="store_true",
+        help="Alias for --skip-large (kept for backward compatibility)",
+    )
     args = p.parse_args()
+
+    if args.skip_2gb:
+        args.skip_large = True  # type: ignore[misc]
 
     out = Path(args.out_dir)
     rng = np.random.default_rng(42)
 
-    kb_path = out / "synth_small_kb.csv"
-    mb_path = out / "synth_medium_mb.csv"
-    gb_path = out / "synth_large_2gb.csv"
+    out_n = out.as_posix().rstrip("/").lower()
+    default_legacy = out_n.endswith("data/synth") and not args.no_legacy_synth_names
+    use_legacy = (args.use_legacy_synth_names or default_legacy) and not args.no_legacy_synth_names
+    if use_legacy:
+        kb_path, mb_path, gb_path = _legacy_synth_paths(out)
+    else:
+        kb_path, mb_path, gb_path = _default_paths(out, args.prefix, args.mb_target, args.target_gb)
 
-    print("Small (KB):", kb_path, f"rows={args.kb_rows}")
-    write_csv(kb_path, args.kb_rows, rng)
-    print("  size:", kb_path.stat().st_size, "bytes")
+    if not args.skip_small:
+        print("Small (KB):", kb_path, f"rows={args.kb_rows}")
+        write_csv(kb_path, args.kb_rows, rng)
+        print("  size:", kb_path.stat().st_size, "bytes")
+    else:
+        print("Skipped small file (--skip-small).")
 
-    mb_bytes = int(args.mb_target * 1024 * 1024)
-    print("Medium (MB):", mb_path, f"~{args.mb_target} MB (writes until size >= target)")
-    mb_path.parent.mkdir(parents=True, exist_ok=True)
-    with mb_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(COLUMNS)
-        f.flush()
-        while f.tell() < mb_bytes:
-            for row in _random_rows(rng, 2_000):
-                w.writerow(row)
+    if not args.skip_medium:
+        mb_bytes = int(args.mb_target * 1024 * 1024)
+        print("Medium (MB):", mb_path, f"~{args.mb_target} MB (writes until size >= target)")
+        mb_path.parent.mkdir(parents=True, exist_ok=True)
+        with mb_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(COLUMNS)
             f.flush()
-    print("  size:", mb_path.stat().st_size, "bytes")
+            while f.tell() < mb_bytes:
+                for row in _random_rows(rng, 2_000):
+                    w.writerow(row)
+                f.flush()
+        print("  size:", mb_path.stat().st_size, "bytes")
+    else:
+        print("Skipped medium file (--skip-medium).")
 
-    if args.skip_2gb:
-        print("Skipped large file (--skip-2gb).")
+    if args.skip_large:
+        print("Skipped large file (--skip-large / --skip-2gb).")
         return
 
     target = int(args.target_gb * 1024**3)
