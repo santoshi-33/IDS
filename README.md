@@ -89,6 +89,41 @@ You can export them to CSV and point `ids.train` to the CSV.
 - `app/`: Streamlit dashboard (auth, upload, charts, live view)
 - `models/`: saved model artifacts (created after training)
 - `data/`: your datasets (not committed by default)
+- `Dockerfile` / `render.yaml`: deploy to [Render](https://render.com)
+
+## Deploy: GitHub (`santoshi-33` or any account) + Render
+
+### 1) Push this repo to GitHub (example: `santoshi-33/ids`)
+
+Create an empty repository on GitHub (no README) under the account you want, e.g. `https://github.com/santoshi-33/ids`, then from your machine:
+
+```bash
+cd /path/to/project-endsem
+git remote add santoshi git@github.com:santoshi-33/ids.git
+git push -u santoshi main
+```
+
+(Use HTTPS + token if you do not use SSH.) If the repo already has `origin` to another user, you can keep both remotes or set `santoshi` as the only `origin` after re-adding it.
+
+### 2) Deploy on Render
+
+1. [Render](https://dashboard.render.com) → **New** → **Blueprint** (or **Web Service**).
+2. Connect the GitHub repo (e.g. `santoshi-33/ids`).
+3. If you use **Blueprint**, select `render.yaml` — it builds with **Docker** using `./Dockerfile`.
+4. In **Environment**, set at least:
+   - `IDS_USER` = your demo login email  
+   - `IDS_PASS` = your demo password  
+
+(Without a model in the image, the app offers **“Setup demo (download + train)”** in the UI; first run can take several minutes. For more RAM, upgrade the Render instance.)
+
+### 3) Local Docker (optional)
+
+```bash
+docker build -t ml-ids .
+docker run -p 8501:8501 -e PORT=8501 -e IDS_USER=you@mail.com -e IDS_PASS=secret ml-ids
+```
+
+Open `http://localhost:8501`.
 
 ## Commands
 

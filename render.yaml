@@ -1,0 +1,16 @@
+# Render Blueprint — connect repo and deploy
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: ml-ids
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Optional fixed login (recommended for cloud; sign-up file is ephemeral)
+      - key: IDS_USER
+        sync: false
+      - key: IDS_PASS
+        sync: false
