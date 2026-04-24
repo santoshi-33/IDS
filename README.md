@@ -4,7 +4,8 @@ This project implements the **Machine Learning based Intrusion Detection System*
 - Data preprocessing (cleaning, encoding, scaling)
 - XGBoost model training and evaluation
 - Intrusion detection on uploaded datasets
-- Visualization dashboard with basic authentication
+- Visualization dashboard with email + password login
+- PDF report generation + optional email delivery (SMTP)
 - Optional live monitoring (packet sniffing) with a safe fallback simulation
 
 ## Quickstart
@@ -26,7 +27,7 @@ This will download NSL-KDD CSVs, create `data/train.csv` + `data/test.csv` with 
 python scripts/setup_demo.py
 ```
 
-### 2) Train a model (using your dataset CSV)
+### 3) Train a model (using your dataset CSV)
 
 Put a CSV dataset at `data/train.csv` (or provide a path). The CSV must include a label column:
 - default label column name: `label`
@@ -36,21 +37,34 @@ Put a CSV dataset at `data/train.csv` (or provide a path). The CSV must include 
 python -m ids.train --data data/train.csv --label-col label --out models/ids_model.joblib
 ```
 
-### 3) Run the dashboard
+### 4) Run the dashboard
 
 ```bash
 streamlit run app/streamlit_app.py
 ```
 
-Login defaults (change via env vars):
-- `IDS_USER` (default `admin`)
-- `IDS_PASS` (default `admin123`)
+Login (email + password) via env vars / Streamlit secrets:
+- `IDS_USER`: allowed login email
+- `IDS_PASS`: password
 
 Example:
 
 ```bash
-IDS_USER=admin IDS_PASS=admin123 streamlit run app/streamlit_app.py
+IDS_USER=you@example.com IDS_PASS=yourpass streamlit run app/streamlit_app.py
 ```
+
+### 5) PDF report + email (SMTP)
+
+The dashboard can generate a PDF and optionally email it.
+
+Set these environment variables (or Streamlit Cloud **Secrets**):
+
+- `IDS_SMTP_HOST` (e.g. `smtp.gmail.com`)
+- `IDS_SMTP_PORT` (usually `587`)
+- `IDS_SMTP_USER` (your SMTP username)
+- `IDS_SMTP_PASS` (app password / SMTP password)
+- `IDS_SMTP_FROM` (the From address; often same as `IDS_SMTP_USER`)
+- `IDS_SMTP_STARTTLS` (default `1`; set `0` if your provider does not use STARTTLS)
 
 ## Data notes (NSL-KDD / CICIDS2017)
 
