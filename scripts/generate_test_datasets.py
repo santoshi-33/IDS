@@ -8,6 +8,12 @@ Same columns as data/train.csv (if present) or a built-in schema.
   python scripts/generate_test_datasets.py --target-gb 1.0
   python scripts/generate_test_datasets.py --out-dir data/test_cases --no-legacy-synth-names \
       --prefix test --mb-target 200 --target-gb 1 --skip-small --skip-large
+  # One file of exact size (bytes on disk, CSV rows):
+  python scripts/generate_test_datasets.py --out-dir data/test_cases --no-legacy-synth-names \\
+      --out-file test_20mb.csv --target-bytes 20971520
+  # All 8 default tiers (10 KB … 200 MB) + optional 1 GB:
+  python scripts/generate_test_datasets.py --out-dir data/test_cases --no-legacy-synth-names --benchmark-tiers
+  python scripts/generate_test_datasets.py --out-dir data/test_cases --no-legacy-synth-names --benchmark-tiers --include-1gb
 """
 from __future__ import annotations
 
@@ -159,15 +165,20 @@ def write_until_size(
         w.writerow(COLUMNS)
         f.flush()
         while f.tell() < target_bytes:
-            for row in _random_rows(rng, chunk):
+            remain = target_bytes - f.tell()
+            # Large writes overshoot small targets (e.g. 10 KB); use tiny batches when close
+            n_batch = chunk if remain > 120_000 else max(1, min(chunk, remain // 150 + 1))
+            for row in _random_rows(rng, n_batch):
                 w.writerow(row)
+                if f.tell() >= target_bytes:
+                    break
             f.flush()
-            total = f.tell()
-            gb = total / (1024**3)
-            if gb >= 0.1:
-                print(f"  ... {path.name} ~{gb:.2f} GB", flush=True)
-            else:
-                print(f"  ... {path.name} ~{total / (1024**2):.1f} MB", flush=True)
+        total = f.tell()
+        gb = total / (1024**3)
+        if gb >= 0.1:
+            print(f"  ... {path.name} ~{gb:.2f} GB", flush=True)
+        else:
+            print(f"  ... {path.name} ~{total / (1024**2):.1f} MB", flush=True)
 
 
 def _default_paths(out: Path, prefix: str, mb_target: float, target_gb: float) -> tuple[Path, Path, Path]:
@@ -178,6 +189,18 @@ def _default_paths(out: Path, prefix: str, mb_target: float, target_gb: float) -
         out / f"{prefix}_{mb_name}.csv",
         out / f"{prefix}_{gb_name}.csv",
     )
+
+
+BENCHMARK_TIERS: list[tuple[str, int]] = [
+    ("test_10kb.csv", 10 * 1024),
+    ("test_100kb.csv", 100 * 1024),
+    ("test_500kb.csv", 500 * 1024),
+    ("test_1mb.csv", 1 * 1024 * 1024),
+    ("test_5mb.csv", 5 * 1024 * 1024),
+    ("test_20mb.csv", 20 * 1024 * 1024),
+    ("test_100mb.csv", 100 * 1024 * 1024),
+    ("test_200mb.csv", 200 * 1024 * 1024),
+]
 
 
 def _legacy_synth_paths(out: Path) -> tuple[Path, Path, Path]:
@@ -223,12 +246,57 @@ def main() -> None:
         action="store_true",
         help="Alias for --skip-large (kept for backward compatibility)",
     )
+    p.add_argument(
+        "--out-file",
+        default=None,
+        help="With --target-bytes, write only this file under out-dir (e.g. test_5mb.csv).",
+    )
+    p.add_argument(
+        "--target-bytes",
+        type=int,
+        default=None,
+        help="Exact min on-disk size to grow CSV to (used with --out-file).",
+    )
+    p.add_argument(
+        "--benchmark-tiers",
+        action="store_true",
+        help=f"Write {len(BENCHMARK_TIERS)} NSL-KDD–shaped CSVs (10KB–200MB) to out-dir.",
+    )
+    p.add_argument(
+        "--include-1gb",
+        action="store_true",
+        help="With --benchmark-tiers, also write test_1gb.csv (~1 GiB, slow).",
+    )
     args = p.parse_args()
 
     if args.skip_2gb:
         args.skip_large = True  # type: ignore[misc]
 
     out = Path(args.out_dir)
+
+    if args.benchmark_tiers:
+        out.mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(42)
+        for name, target_b in BENCHMARK_TIERS:
+            dest = out / name
+            print("Benchmark:", dest, f"~{target_b / 1024:.0f} KB" if target_b < 1024**2 else f"~{target_b / 1024**2:.0f} MB")
+            write_until_size(dest, target_b, rng)
+            print("  size:", dest.stat().st_size, "bytes")
+        if args.include_1gb:
+            gb_path = out / "test_1gb.csv"
+            print("Large:", gb_path, "~1 GB (slow)")
+            write_until_size(gb_path, 1024**3, np.random.default_rng(42))
+            print("  size:", gb_path.stat().st_size, "bytes")
+        return
+
+    if args.out_file and args.target_bytes is not None:
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / args.out_file
+        rng = np.random.default_rng(42)
+        print("Single file:", path, f"target_bytes={args.target_bytes}")
+        write_until_size(path, int(args.target_bytes), rng)
+        print("  size:", path.stat().st_size, "bytes")
+        return
     rng = np.random.default_rng(42)
 
     out_n = out.as_posix().rstrip("/").lower()

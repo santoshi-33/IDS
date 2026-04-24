@@ -26,11 +26,22 @@ from ids.user_store import env_bootstrap_exists, sign_up, verify_user
 
 APP_TITLE = "ML-based Intrusion Detection System (IDS)"
 
-# Load / synthetic test datasets (e.g. 200 MB, 1 GB) for benchmarking — see scripts/generate_test_datasets.py
+# Benchmark CSVs: scripts/generate_test_datasets.py (--benchmark-tiers, --out-file, …)
 TEST_CASES_DIR = PROJECT_ROOT / "data" / "test_cases"
-TEST_CASE_SMALL = "test_small.csv"
-TEST_CASE_200MB = "test_200mb.csv"
-TEST_CASE_1GB = "test_1gb.csv"
+# Must match .streamlit/config.toml [server] maxUploadSize (MB) for local/self-host
+MAX_UPLOAD_MB = 2048
+# Streamlit Community Cloud may cap lower — large files: generate on server, don’t upload
+BENCHMARK_FILES: list[tuple[str, str, int]] = [
+    ("~10 KB", "test_10kb.csv", 10 * 1024),
+    ("~100 KB", "test_100kb.csv", 100 * 1024),
+    ("~500 KB", "test_500kb.csv", 500 * 1024),
+    ("~1 MB", "test_1mb.csv", 1 * 1024 * 1024),
+    ("~5 MB", "test_5mb.csv", 5 * 1024 * 1024),
+    ("~20 MB", "test_20mb.csv", 20 * 1024 * 1024),
+    ("~100 MB", "test_100mb.csv", 100 * 1024 * 1024),
+    ("~200 MB", "test_200mb.csv", 200 * 1024 * 1024),
+    ("~1 GB (max tier)", "test_1gb.csv", 1024**3),
+]
 
 
 def _fmt_file_size(n: int) -> str:
@@ -342,99 +353,85 @@ def render_upload_and_scan(pipe: Any) -> None:
 
 
 def render_test_case_library() -> None:
-    """`data/test_cases/`: expected load-test CSVs; upload or generate if missing."""
-    st.header("Test case files")
+    """`data/test_cases/`: 8+ benchmark sizes; upload (≤ limit) or generate (any size on server)."""
+    st.header("Test case files (benchmark sizes)")
     rel = TEST_CASES_DIR.relative_to(PROJECT_ROOT)
     st.caption(
-        f"Directory `{rel}/` — keep benchmark CSVs here (e.g. ~200 MB, ~1 GB). "
-        "If a file is missing, upload your own or generate synthetic NSL-KDD–shaped data on this machine. "
-        "Very large uploads depend on [server] maxUploadSize in `.streamlit/config.toml` and host limits."
+        f"Folder `{rel}/` — **9 preset sizes** (10 KB → 1 GB). NSL-KDD–shaped synthetic CSV; "
+        "use **Upload & Scan** to run the model on one of these files. "
+        f"**Max upload in this app config:** **{MAX_UPLOAD_MB} MB** (`.streamlit/config.toml` `maxUploadSize`). "
+        "On Streamlit Cloud the host may cap lower — for big files, use **Generate** on the server, not upload."
     )
     TEST_CASES_DIR.mkdir(parents=True, exist_ok=True)
 
-    slots: list[dict[str, str | list[str]]] = [
-        {
-            "title": "Small sample",
-            "file": TEST_CASE_SMALL,
-            "hint": "About tens of KB — quick sanity check.",
-            "gen_args": [
-                "--prefix",
-                "test",
-                "--kb-rows",
-                "50",
-                "--mb-target",
-                "200",
-                "--target-gb",
-                "1",
-                "--skip-medium",
-                "--skip-large",
-            ],
-        },
-        {
-            "title": "~200 MB",
-            "file": TEST_CASE_200MB,
-            "hint": "Synthetic file grown to about 200 MB (may take a few minutes).",
-            "gen_args": [
-                "--prefix",
-                "test",
-                "--mb-target",
-                "200",
-                "--target-gb",
-                "1",
-                "--skip-small",
-                "--skip-large",
-            ],
-        },
-        {
-            "title": "~1 GB",
-            "file": TEST_CASE_1GB,
-            "hint": "Synthetic file grown to about 1 GB (long run; needs free disk).",
-            "gen_args": [
-                "--prefix",
-                "test",
-                "--mb-target",
-                "200",
-                "--target-gb",
-                "1",
-                "--skip-small",
-                "--skip-medium",
-            ],
-        },
-    ]
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Generate all 8 (10 KB → 200 MB)", type="primary", key="tc_bench8"):
+            with st.status("Generating 8 benchmark CSVs (may take several minutes)…", expanded=True) as status:
+                proc = _run_generate_subprocess(["--benchmark-tiers"])
+                out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+                st.code(out or "(no output)")
+                if proc.returncode == 0:
+                    status.update(label="Done.", state="complete")
+                    st.rerun()
+                else:
+                    status.update(label="Failed.", state="error")
+                    st.error("Generator failed.")
+    with c2:
+        if st.button("Generate + ~1 GB file (very slow)", key="tc_bench1g"):
+            with st.status("Generating 8 tiers + ~1 GB (long)…", expanded=True) as status:
+                proc = _run_generate_subprocess(["--benchmark-tiers", "--include-1gb"])
+                st.code((proc.stdout or "") + "\n" + (proc.stderr or "") or "(no output)")
+                if proc.returncode == 0:
+                    status.update(label="Done.", state="complete")
+                    st.rerun()
+                else:
+                    status.update(label="Failed.", state="error")
+                    st.error("Generator failed.")
 
-    for slot in slots:
-        fname = str(slot["file"])
-        title = str(slot["title"])
-        hint = str(slot["hint"])
-        gen_args: list[str] = slot["gen_args"]  # type: ignore[assignment]
+    for label, fname, tbytes in BENCHMARK_FILES:
+        gen_args: list[str] = [
+            "--out-file",
+            fname,
+            "--target-bytes",
+            str(tbytes),
+        ]
         path = TEST_CASES_DIR / fname
         exists = path.is_file()
-        with st.expander(f"{title} — `{fname}`", expanded=not exists):
+        upload_ok = tbytes <= MAX_UPLOAD_MB * 1024 * 1024
+        hint = (
+            f"Target on disk ≈ {label} — one file, grows by rows until size reached. "
+            + ("Fits under upload cap." if upload_ok else f"Larger than {MAX_UPLOAD_MB} MB cap — use Generate, not upload.")
+        )
+        with st.expander(f"{label} — `{fname}`", expanded=False):
             st.caption(hint)
             if exists:
                 st.success(f"Found — **{_fmt_file_size(path.stat().st_size)}**")
             else:
-                st.info("File missing — upload a `.csv` or use **Generate** (writes under this folder).")
-            fup = st.file_uploader("Upload CSV (optional)", type=["csv"], key=f"tc_up_{fname}")
-            if fup is not None and st.button("Save as " + fname, key=f"tc_save_{fname}"):
+                st.info("Missing — **Generate** here or **upload** if under max size.")
+            fup = st.file_uploader(
+                "Upload CSV" + ("" if upload_ok else f" (file too big for {MAX_UPLOAD_MB} MB cap — generate instead)"),
+                type=["csv"],
+                key=f"tc_up_{fname}",
+                disabled=not upload_ok,
+            )
+            if upload_ok and fup is not None and st.button("Save as " + fname, key=f"tc_save_{fname}"):
                 try:
                     _save_upload_to_test_cases(fup, fname)
                     st.success("Saved.")
                     st.rerun()
                 except Exception as e:
                     st.error(str(e))
-            if st.button("Generate on this machine", key=f"tc_gen_{fname}"):
-                with st.status("Running `scripts/generate_test_datasets.py`...", expanded=True) as status:
+            if st.button("Generate this file only", key=f"tc_gen_{fname}"):
+                with st.status(f"Writing `{fname}`…", expanded=True) as status:
                     proc = _run_generate_subprocess(gen_args)
-                    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-                    st.code(out or "(no output)")
+                    st.code((proc.stdout or "") + "\n" + (proc.stderr or "") or "(no output)")
                     if proc.returncode == 0:
                         status.update(label="Done.", state="complete")
-                        st.success("Refresh to see the file.")
                         st.rerun()
                     else:
                         status.update(label="Failed.", state="error")
-                        st.error("Generator exited with an error.")
+                        st.error("Generator failed.")
 
     st.divider()
     st.subheader("All CSVs in this folder")
